@@ -1,23 +1,16 @@
 from __future__ import print_function
-import sys 
-sys.path.append("/home/guangyao_li/projects/avqa/music_avqa_camera_ready") 
-import argparse
+import ast
+import json
+import os
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from net_grd_avst.dataloader_avst import *
-from net_grd_avst.net_avst import AVQA_Fusion_Net
-import ast
-import json
-import numpy as np
-import pdb
-# from .net_avst import AVQA_Fusion_Net
-
-import warnings
-from datetime import datetime
-TIMESTAMP = "{0:%Y-%m-%d-%H-%M-%S/}".format(datetime.now()) 
-warnings.filterwarnings('ignore')
 from torch.utils.tensorboard import SummaryWriter
+
+import net_grd_avst.dataloader_avst as dataloader_avst
+from net_grd_avst.net_avst import AVQA_Fusion_Net
+import yaml
 writer = SummaryWriter('runs/net_avst/'+TIMESTAMP)
 
 print("\n--------------- Audio-Visual Spatial-Temporal Model --------------- \n")
@@ -39,7 +32,7 @@ def batch_organize(out_match_posi,out_match_nega):
     return out_match, batch_labels
 
 
-def train(args, model, train_loader, optimizer, criterion, epoch):
+def train(config, model, train_loader, optimizer, criterion, epoch):
     model.train()
     total_qa = 0
     correct_qa = 0
@@ -62,7 +55,7 @@ def train(args, model, train_loader, optimizer, criterion, epoch):
 
         loss.backward()
         optimizer.step()
-        if batch_idx % args.log_interval == 0:
+        if batch_idx % config["training"]["log_interval"] == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(audio), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader), loss.item()))
@@ -172,62 +165,26 @@ def test(model, val_loader):
     return 100 * correct / total
 
 def main():
-    # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch Implementation of Audio-Visual Question Answering')
+    with open('config.yaml', 'r') as file:
+        config = yaml.safe_load(file)
 
-    parser.add_argument(
-        "--audio_dir", type=str, default='/home/guangyao_li/dataset/avqa-features/feats/vggish', help="audio dir")
-    # parser.add_argument(
-    #     "--video_dir", type=str, default='/home/guangyao_li/dataset/avqa/avqa-frames-1fps', help="video dir")
-    parser.add_argument(
-        "--video_res14x14_dir", type=str, default='/home/guangyao_li/dataset/avqa-features/visual_14x14', help="res14x14 dir")
-    
-    parser.add_argument(
-        "--label_train", type=str, default="./data/json/avqa-train.json", help="train csv file")
-    parser.add_argument(
-        "--label_val", type=str, default="./data/json/avqa-val.json", help="val csv file")
-    parser.add_argument(
-        "--label_test", type=str, default="./data/json/avqa-test.json", help="test csv file")
-    parser.add_argument(
-        '--batch-size', type=int, default=64, metavar='N', help='input batch size for training (default: 16)')
-    parser.add_argument(
-        '--epochs', type=int, default=80, metavar='N', help='number of epochs to train (default: 60)')
-    parser.add_argument(
-        '--lr', type=float, default=1e-4, metavar='LR', help='learning rate (default: 3e-4)')
-    parser.add_argument(
-        "--model", type=str, default='AVQA_Fusion_Net', help="with model to use")
-    parser.add_argument(
-        "--mode", type=str, default='train', help="with mode to use")
-    parser.add_argument(
-        '--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
-    parser.add_argument(
-        '--log-interval', type=int, default=50, metavar='N', help='how many batches to wait before logging training status')
-    parser.add_argument(
-        "--model_save_dir", type=str, default='net_grd_avst/avst_models/', help="model save dir")
-    parser.add_argument(
-        "--checkpoint", type=str, default='avst', help="save model name")
-    parser.add_argument(
-        '--gpu', type=str, default='0, 1', help='gpu device number')
+    os.environ['CUDA_VISIBLE_DEVICES'] = config["global"]["gpu"]
 
+    torch.manual_seed(config["global"]["seed"])
 
-    args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-
-    torch.manual_seed(args.seed)
-
-    if args.model == 'AVQA_Fusion_Net':
+    if config["model"]["name"] == 'AVQA_Fusion_Net':
         model = AVQA_Fusion_Net()
         model = nn.DataParallel(model)
         model = model.to('cuda')
     else:
         raise ('not recognized')
 
-    if args.mode == 'train':
-        train_dataset = AVQA_dataset(label=args.label_train, audio_dir=args.audio_dir, video_res14x14_dir=args.video_res14x14_dir,
-                                    transform=transforms.Compose([ToTensor()]), mode_flag='train')
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=1, pin_memory=True)
-        val_dataset = AVQA_dataset(label=args.label_val, audio_dir=args.audio_dir, video_res14x14_dir=args.video_res14x14_dir,
-                                    transform=transforms.Compose([ToTensor()]), mode_flag='val')
+    if config["model"]["mode"] == 'train':
+        train_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_train"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                    transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='train')
+        train_loader = DataLoader(train_dataset, batch_size=config["training"]["batch_size"], shuffle=True, num_workers=1, pin_memory=True)
+        val_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_val"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                    transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='val')
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
 
 
@@ -250,24 +207,24 @@ def main():
 
         # ===================================== load pretrained model ===============================================
 
-        optimizer = optim.Adam(model.parameters(), lr=args.lr)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=8, gamma=0.1)
+        optimizer = optim.Adam(model.parameters(), lr=config["training"]["learning_rate"])
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config["training"]["step_lr"]["step_size"], gamma=config["training"]["step_lr"]["gamma"])
         criterion = nn.CrossEntropyLoss()
         best_F = 0
-        for epoch in range(1, args.epochs + 1):
-            train(args, model, train_loader, optimizer, criterion, epoch=epoch)
+        for epoch in range(1, config["training"]["epochs"] + 1):
+            train(config, model, train_loader, optimizer, criterion, epoch=epoch)
             scheduler.step(epoch)
             F = eval(model, val_loader, epoch)
             if F >= best_F:
                 best_F = F
-                torch.save(model.state_dict(), args.model_save_dir + args.checkpoint + ".pt")
+                torch.save(model.state_dict(), config["directories"]["model_save_dir"] + config["model"]["checkpoint"] + ".pt")
 
     else:
-        test_dataset = AVQA_dataset(label=args.label_test, audio_dir=args.audio_dir, video_res14x14_dir=args.video_res14x14_dir,
-                                   transform=transforms.Compose([ToTensor()]), mode_flag='test')
+        test_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_test"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                   transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='test')
         print(test_dataset.__len__())
         test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
-        model.load_state_dict(torch.load(args.model_save_dir + args.checkpoint + ".pt"))
+        model.load_state_dict(torch.load(config["directories"]["model_save_dir"] + config["model"]["checkpoint"] + ".pt"))
         test(model, test_loader)
 
 
