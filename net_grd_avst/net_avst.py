@@ -5,9 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import numpy as np
-from visual_net import resnet18
+# from visual_net import resnet18
 
-
+import timm
+from einops import rearrange, repeat
 def batch_organize(out_match_posi, out_match_nega):
     # audio B 512
     # posi B 512
@@ -52,16 +53,16 @@ class QstEncoder(nn.Module):
 
 class AVQA_Fusion_Net(nn.Module):
 
-    def __init__(self):
+    def __init__(self, config):
         super(AVQA_Fusion_Net, self).__init__()
-
+        self.config = config
         # for features
         self.fc_a1 =  nn.Linear(128, 512)
         self.fc_a2=nn.Linear(512,512)
 
         self.fc_a1_pure =  nn.Linear(128, 512)
         self.fc_a2_pure=nn.Linear(512,512)
-        self.visual_net = resnet18(pretrained=True)
+        # self.visual_net = resnet18(pretrained=True)
 
         self.fc_v = nn.Linear(2048, 512)
         self.fc_st = nn.Linear(512, 512)
@@ -105,34 +106,80 @@ class AVQA_Fusion_Net(nn.Module):
         self.relu3 = nn.ReLU()
         self.fc4 = nn.Linear(128, 2)
         self.relu4 = nn.ReLU()
+        self.my_fc_v = nn.Linear(config["model"]["embedding_size"], 512)
+        self.my_fc_a = nn.Linear(config["model"]["embedding_size"], 512)
+        self.ViT = timm.create_model(self.config["model"]["vis_encoder"], pretrained=True)
 
 
     def forward(self, audio, visual_posi, visual_nega, question):
         '''
-            input question shape:    [B, T]
-            input audio shape:       [B, T, C]
-            input visual_posi shape: [B, T, C, H, W]
-            input visual_nega shape: [B, T, C, H, W]
+            input question shape:    [B, T] => [B, 14]
+            input audio shape:       [B, T, len, C] => [B, 10, 224, 224]
+            input visual_posi shape: [B, T, C, H, W] => [B, 10, 3, 224, 224]
+            input visual_nega shape: [B, T, C, H, W] => [B, 10, 3, 224, 224]
         '''
+        
+        audio = repeat(audio, 'b t len dim -> b t c len dim', c=3)
+        audio = rearrange(audio, 'b t c h w -> (b t) c h w')
+        # a = self.ViT.patch_embed(audio)
+        # a = torch.cat((self.ViT.cls_token.expand(a.shape[0], -1, -1), a), dim=1)
+        # a = self.ViT.pos_drop(a + self.ViT.pos_embed)
+        
+        # visual
+        bs, t, c, h, w = visual_posi.shape
+        visual_posi = rearrange(visual_posi, 'b t c h w -> (b t) c h w')
+        # v = self.ViT.patch_embed(visual_posi)
+        # v = torch.cat((self.ViT.cls_token.expand(v.shape[0], -1, -1), v), dim=1)
+        # v = self.ViT.pos_drop(v + self.ViT.pos_embed)
+        
+        # for _, blk in enumerate(self.ViT.blocks):
+        #     a = a + blk.drop_path1(blk.ls1(blk.attn(blk.norm1(a))))
+        #     v = v + blk.drop_path1(blk.ls1(blk.attn(blk.norm1(v))))
+        #     a = a + blk.drop_path2(blk.ls2(blk.mlp(blk.norm2(a))))
+        #     v = v + blk.drop_path2(blk.ls2(blk.mlp(blk.norm2(v))))
 
+        # v = self.ViT.norm(v) #[20, 197, 768] (if B = 2, T = 10, 197 = 196 + class_token, 768)
+        # a = self.ViT.norm(a) #[20, 197, 768] (if B = 2, T = 10, 197 = 196 + class_token, 768)
+        
+        v = self.ViT.forward_features(visual_posi)
+        a = self.ViT.forward_features(audio)
+        
+        
+        v = v[:,:-1].clone() #[20, 196, 768]
+        a = a[:,:-1].clone() #[20, 196, 768]
+        ########################################################################
+        f_v = self.my_fc_v(v)#[20, 196, 512]
+        f_a = self.my_fc_a(a)#[20, 196, 512]
+        with torch.no_grad():
+            visual_nega = rearrange(visual_nega, 'b t c h w -> (b t) c h w')
+            visual_nega = self.ViT.forward_features(visual_nega) #[20, 197, 768]
+
+        ### ------->
+        visual_nega = visual_nega[:,:-1].clone()
+        visual_nega = self.my_fc_v(visual_nega) #[20, 196, 512]
+        visual_posi = rearrange(f_v, '(b t) (h w) c -> b t c h w', b=bs ,t=t, h=14 ,w=14) # [B, T, 512, 14, 14] 
+        visual_nega = rearrange(visual_nega, '(b t) (h w) c -> b t c h w', b=bs ,t=t, h=14 ,w=14) # [B, T, 512, 14, 14] 
+        f_a = f_a.mean(dim=1) # [B, C] => [20, 512]
+        audio = rearrange(f_a, '(b t) c -> b t c', b=bs ,t=t) #[2, 10, 512]
+        ### <-----
         ## question features
         qst_feature = self.question_encoder(question)
         xq = qst_feature.unsqueeze(0)
 
-        ## audio features  [2*B*T, 128]
-        audio_feat = F.relu(self.fc_a1(audio))
-        audio_feat = self.fc_a2(audio_feat)  
+        ## audio features 
+        audio_feat = F.relu(audio) # [2, 10, 512]
+        audio_feat = self.fc_a2(audio_feat)
         audio_feat_pure = audio_feat
         B, T, C = audio_feat.size()             # [B, T, C]
         audio_feat = audio_feat.view(B*T, C)    # [B*T, C]
 
-        ## visual posi [2*B*T, C, H, W]
+        ## visual posi
         B, T, C, H, W = visual_posi.size()
         temp_visual = visual_posi.view(B*T, C, H, W)            # [B*T, C, H, W]
         v_feat = self.avgpool(temp_visual)                      # [B*T, C, 1, 1]
         visual_feat_before_grounding_posi = v_feat.squeeze()    # [B*T, C]
 
-        (B, C, H, W) = temp_visual.size()
+        B, C, H, W = temp_visual.size()
         v_feat = temp_visual.view(B, C, H * W)                      # [B*T, C, HxW]
         v_feat = v_feat.permute(0, 2, 1)                            # [B, HxW, C]
         visual_feat_posi = nn.functional.normalize(v_feat, dim=2)   # [B, HxW, C]

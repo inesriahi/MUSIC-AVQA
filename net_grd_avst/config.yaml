@@ -1,31 +1,34 @@
 system:
   sys_path: "/home/guangyao_li/projects/avqa/music_avqa_camera_ready"
   warnings: ignore
-  tensorboard_logdir: 'runs/net_avst/'
-  cuda_visible_devices: '0, 1'
+  tensorboard_logdir: "runs/net_avst/"
+  cuda_visible_devices: "0, 1"
 
 global:
   seed: 1
-  gpu: '0, 1'
+  gpu: "0, 1, 2, 3, 4, 5, 6, 7"
 
 directories:
-  audio_dir: '/home/guangyao_li/dataset/avqa-features/feats/vggish'
-  video_res14x14_dir: '/home/guangyao_li/dataset/avqa-features/visual_14x14'
-  label_train: "./data/json/avqa-train.json"
-  label_val: "./data/json/avqa-val.json"
-  label_test: "./data/json/avqa-test.json"
-  model_save_dir: 'net_grd_avst/avst_models/'
+  audio_dir: "/scratch/project_462000189/datasets/MUCIS-AVQA/AVQA_Dataset/raw_audio"
+  video_res14x14_dir: "/scratch/project_462000189/datasets/MUCIS-AVQA/AVQA_Dataset/video_frames"
+  label_train: "/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-train.json"
+  label_val: "/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-val.json"
+  label_test: "/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-test.json"
+  model_save_dir: "net_grd_avst/avst_models/"
   pretrained_file: "grounding_gen/models_grounding_gen/main_grounding_gen_best.pt"
 
 model:
-  name: 'AVQA_Fusion_Net'
-  checkpoint: 'avst'
-  mode: 'train'
+  name: "AVQA_Fusion_Net"
+  checkpoint: "avst"
+  mode: "train"
+  vis_encoder: "vit_base_patch16_224_in21k"
+  embedding_size: 768
 
 training:
-  batch_size: 64
-  epochs: 80
-  learning_rate: 1e-4
+  batch_size: 16
+  num_workers: 4
+  epochs: 50
+  learning_rate: 0.0001
   log_interval: 50
   step_lr:
     step_size: 8

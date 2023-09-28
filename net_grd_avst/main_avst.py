@@ -2,16 +2,32 @@ from __future__ import print_function
 import ast
 import json
 import os
+import sys
+sys.path.append('.')
+from datetime import datetime
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms, utils
 from torch.utils.tensorboard import SummaryWriter
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+import time
+from datetime import timedelta
 
-import net_grd_avst.dataloader_avst as dataloader_avst
-from net_grd_avst.net_avst import AVQA_Fusion_Net
+import dataloader_avst as dataloader_avst
+from net_avst import AVQA_Fusion_Net
 import yaml
+
+TIMESTAMP = "{0:%Y-%m-%d-%H-%M-%S/}".format(datetime.now()) 
 writer = SummaryWriter('runs/net_avst/'+TIMESTAMP)
+dist.init_process_group("nccl")
+local_rank = int(os.environ["LOCAL_RANK"])
+torch.cuda.set_device(local_rank)
+global_rank = int(os.environ["RANK"])
 
 print("\n--------------- Audio-Visual Spatial-Temporal Model --------------- \n")
 
@@ -40,6 +56,8 @@ def train(config, model, train_loader, optimizer, criterion, epoch):
         audio,visual_posi,visual_nega, target, question = sample['audio'].to('cuda'), sample['visual_posi'].to('cuda'),sample['visual_nega'].to('cuda'), sample['label'].to('cuda'), sample['question'].to('cuda')
 
         optimizer.zero_grad()
+        # model = model.cuda()
+        # model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
         out_qa, out_match_posi,out_match_nega = model(audio, visual_posi,visual_nega, question)  
         out_match,match_label=batch_organize(out_match_posi,out_match_nega)  
         out_match,match_label = out_match.type(torch.FloatTensor).cuda(), match_label.type(torch.LongTensor).cuda()
@@ -52,7 +70,6 @@ def train(config, model, train_loader, optimizer, criterion, epoch):
         writer.add_scalar('run/match',loss_match.item(), epoch * len(train_loader) + batch_idx)
         writer.add_scalar('run/qa_test',loss_qa.item(), epoch * len(train_loader) + batch_idx)
         writer.add_scalar('run/both',loss.item(), epoch * len(train_loader) + batch_idx)
-
         loss.backward()
         optimizer.step()
         if batch_idx % config["training"]["log_interval"] == 0:
@@ -165,27 +182,28 @@ def test(model, val_loader):
     return 100 * correct / total
 
 def main():
-    with open('config.yaml', 'r') as file:
+    with open('/scratch/project_462000189/ines/MUSIC-AVQA/net_grd_avst/config.yaml', 'r') as file:
         config = yaml.safe_load(file)
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = config["global"]["gpu"]
+    print(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    # os.environ['CUDA_VISIBLE_DEVICES'] = config["global"]["gpu"]
 
     torch.manual_seed(config["global"]["seed"])
 
     if config["model"]["name"] == 'AVQA_Fusion_Net':
-        model = AVQA_Fusion_Net()
-        model = nn.DataParallel(model)
-        model = model.to('cuda')
+        model = AVQA_Fusion_Net(config)
+        model = model.cuda()
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
     else:
         raise ('not recognized')
 
     if config["model"]["mode"] == 'train':
         train_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_train"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
                                     transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='train')
-        train_loader = DataLoader(train_dataset, batch_size=config["training"]["batch_size"], shuffle=True, num_workers=1, pin_memory=True)
+        train_sampler = DistributedSampler(train_dataset)
+        train_loader = DataLoader(train_dataset, batch_size=config["training"]["batch_size"], num_workers=config["training"]["num_workers"], pin_memory=True, sampler=train_sampler)
         val_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_val"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
                                     transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='val')
-        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=config["training"]["num_workers"], pin_memory=True)
 
 
         # ===================================== load pretrained model ===============================================
@@ -211,13 +229,29 @@ def main():
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config["training"]["step_lr"]["step_size"], gamma=config["training"]["step_lr"]["gamma"])
         criterion = nn.CrossEntropyLoss()
         best_F = 0
+        total_start_time = time.time()  # Record the start time of the training
+
         for epoch in range(1, config["training"]["epochs"] + 1):
+            epoch_start_time = time.time()  # Record the start time of the epoch
+            
+            # Your training and evaluation code here
             train(config, model, train_loader, optimizer, criterion, epoch=epoch)
             scheduler.step(epoch)
             F = eval(model, val_loader, epoch)
+            
+            # Calculate and print the time each epoch takes
+            epoch_end_time = time.time()
+            epoch_duration = timedelta(seconds=(epoch_end_time - epoch_start_time))
+            print(f"Epoch {epoch} completed in {epoch_duration}")
+            
             if F >= best_F:
                 best_F = F
                 torch.save(model.state_dict(), config["directories"]["model_save_dir"] + config["model"]["checkpoint"] + ".pt")
+
+        total_end_time = time.time()
+        total_duration = timedelta(seconds=(total_end_time - total_start_time))
+        print(f"Total training time: {total_duration}")
+
 
     else:
         test_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_test"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],

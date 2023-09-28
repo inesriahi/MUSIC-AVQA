@@ -1,60 +1,22 @@
-import numpy as np
-import torch
-import os
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
-import pandas as pd
 import ast
 import json
-from PIL import Image
-from munch import munchify
-import time
+import os
 import random
+import warnings
 
+import numpy as np
+import torch
+import torchaudio
+import torchvision
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms, utils
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+from PIL import Image
+from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-# def TransformImage(img):
+from parallelzipfile import ParallelZipFile
 
-#     transform_list = []
-#     mean = [0.43216, 0.394666, 0.37645]
-#     std = [0.22803, 0.22145, 0.216989]
-
-#     transform_list.append(transforms.Resize([224,224]))
-#     transform_list.append(transforms.ToTensor())
-#     transform_list.append(transforms.Normalize(mean, std))
-#     trans = transforms.Compose(transform_list)
-#     frame_tensor = trans(img)
-    
-#     return frame_tensor
-
-
-# def load_frame_info(img_path):
-
-#     img = Image.open(img_path).convert('RGB')
-#     frame_tensor = TransformImage(img)
-
-#     return frame_tensor
-
-
-# def image_info(video_name):
-
-#     path = "/home/guangyao_li/dataset/avqa/avqa-frames-8fps"
-#     img_path = os.path.join(path, video_name)
-
-#     img_list = os.listdir(img_path)
-#     img_list.sort()
-
-#     select_img = []
-#     for frame_idx in range(0,len(img_list),8):
-#         if frame_idx < 475:
-#             video_frames_path = os.path.join(img_path, str(frame_idx+1).zfill(6)+".jpg")
-
-#             frame_tensor_info = load_frame_info(video_frames_path)
-#             select_img.append(frame_tensor_info.cpu().numpy())
-
-#     select_img = np.array(select_img)
-
-#     return select_img
-
+warnings.filterwarnings('ignore')
 
 
 def ids_to_multinomial(id, categories):
@@ -67,13 +29,42 @@ def ids_to_multinomial(id, categories):
     return id_to_idx[id]
 
 class AVQA_dataset(Dataset):
+    """
+    Dataset class for Audio-Visual Question-Answering (AVQA).
 
-    def __init__(self, label, audio_dir, video_res14x14_dir, transform=None, mode_flag='train'):
+    Attributes:
+        ques_vocab (list): Vocabulary for questions.
+        ans_vocab (list): Vocabulary for answers.
+        word_to_ix (dict): Word to index mapping.
+        samples (list): List of samples loaded from JSON.
+        max_len (int): Maximum length of a question.
+        audio_dir (str): Directory for audio data.
+        video_res14x14_dir (str): Directory for video data in resolution 14x14.
+        transform (callable): Optional transformation to apply on video frames.
+        video_list (list): List of unique video names.
+        video_len (int): Total number of video frames.
+        my_normalize (callable): Transformation to normalize images.
+        norm_mean (float): Mean for audio normalization.
+        norm_std (float): Standard deviation for audio normalization.
+    """
+    def __init__(self, 
+                 label, 
+                 audio_dir, 
+                 video_res14x14_dir, 
+                 transform=None, 
+                 mode_flag='train'):
+        """
+        Initialize the dataset.
 
-
-        samples = json.load(open('./data/json/avqa-train.json', 'r'))
-
-        # nax =  nne
+        Args:
+            label (str): Path to the JSON file containing samples.
+            audio_dir (str): Directory for audio data.
+            video_res14x14_dir (str): Directory for video data in resolution 14x14.
+            transform (callable, optional): Optional transformation to apply on self.samples.
+            mode_flag (str, optional): Mode ('train' or 'test'). Default is 'train'.
+        """
+        
+        samples = json.load(open('/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-train.json', 'r'))
         ques_vocab = ['<pad>']
         ans_vocab = []
         i = 0
@@ -113,44 +104,155 @@ class AVQA_dataset(Dataset):
 
         self.video_list = video_list
         self.video_len = 60 * len(video_list)
+        
+        self.my_normalize = Compose([
+            Resize([224,224], interpolation=Image.BICUBIC),
+            Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
+        ])
+        
+        ### ---> for AVQA
+        self.norm_mean =  -5.187877655029297
+        self.norm_std =  3.8782312870025635
+        
+    # audio
+    def wavform2fbank(self, filename, num_secs=60):
+        """
+        Convert a waveform to filterbank (fbank) features.
+
+        Args:
+            filename (str): Path to the audio file.
+            num_secs (int, optional): Duration in seconds to consider. Default is 60.
+
+        Returns:
+            torch.Tensor: Tensor of shape (T, len, dim) where T=10, len=224, dim=224.
+        """
+        waveform, sr = torchaudio.load(filename)
+        waveform = waveform - waveform.mean()
+        
+        fbank = torchaudio.compliance.kaldi.fbank(waveform, htk_compat=True, sample_frequency=sr, use_energy=False, window_type='hanning', num_mel_bins=224, dither=0.0, frame_shift=4.45)
+        
+        target_length = 224 # to match ViT
+        
+        ## align
+        if len(fbank) > num_secs*target_length:
+            fbank = fbank[:num_secs*target_length]
+            
+        sample_indices = np.linspace(0, len(fbank) - 6*target_length, num=10, dtype=int)
+        total_audio = []
+        for audio_idx in sample_indices:
+            audio_sample = fbank[audio_idx:audio_idx+int(target_length)]
+            ########### ------> very important: audio normalized
+            audio_sample = (audio_sample - self.norm_mean) / (self.norm_std * 2)
+            ### <--------
+            n_frames = audio_sample.shape[0]
+            p = target_length - n_frames
+
+            # cut and pad
+            if p > 0:
+                m = torch.nn.ZeroPad2d((0, 0, 0, p)) # padding bottom by p
+                audio_sample = m(audio_sample)
+            elif p < 0:
+                audio_sample = audio_sample[:target_length, :]
+
+            total_audio.append(audio_sample)
+
+        return torch.stack(total_audio) # (T, len, dim) T = 10, len = total_length = 224, dim = num_mel_bins = 224
+
+    # visual
+    def get_frames(self, zip_file):
+        """
+        Extract frames from a zip file containing images.
+
+        Args:
+            zip_file (ZipFile): Zip file containing images.
+
+        Returns:
+            torch.Tensor: Tensor of shape (T, C, H, W) where T=10, C=3, H=W=224.
+        """
+        total_num_frames = len(zip_file.namelist())
+        
+        sample_indices = np.linspace(1, total_num_frames, 10, dtype=int)
+        total_img = []
+        for index in sample_indices:
+            # Format the filename with leading zeros (e.g., "000001.jpg")
+            filename = f"{index:06d}.jpg"
+            
+            # Read the file from the zip archive
+            buffer = zip_file.read(filename)
+            
+            # Decode the image and normalize its values to [0, 1]
+            image = torchvision.io.decode_image(torch.frombuffer(buffer, dtype=torch.uint8)) / 255.0
+            
+            normalized_image = self.my_normalize(image)
+            
+            total_img.append(normalized_image)
+        return torch.stack(total_img) # (T, C, H, W) T = 10, C = 3, H = W = 224
+    
+    def get_negative_sample(self, current_video_index):
+        """
+        Get a negative sample (image) from a different video than the current one.
+
+        Args:
+            current_video_index (int): Index of the current video, to ensure negative sample comes from a different video.
+
+        Returns:
+            torch.Tensor: The negative sample image tensor.
+        """
+        while True:
+            # Randomly select a frame ID
+            neg_frame_id = random.randint(0, self.video_len - 1)
+            # Check if the randomly selected frame belongs to a different video
+            if int(neg_frame_id / 60) != current_video_index:
+                break
+            
+        # Get the video and frame indices for the negative sample
+        neg_video_id = int(neg_frame_id / 60)
+        neg_frame_flag = neg_frame_id % 60
+        
+        neg_video_name = self.video_list[neg_video_id]
+        
+        zip_file_n = ParallelZipFile(self.video_res14x14_dir+'/'+neg_video_name+'.zip', 'r')
+        
+        # Get the total number of frames in the negative video
+        total_num_frames_n = len(zip_file_n.namelist())
+        
+        # Calculate the sample index
+        sample_indx_n = np.linspace(1, total_num_frames_n, num=60, dtype=int)
+        buffer = zip_file_n.read(str("{:06d}".format(sample_indx_n[neg_frame_flag])) + '.jpg')
+        
+        # Decode and normalize the image
+        tmp_img_n = torchvision.io.decode_image(torch.frombuffer(buffer, dtype=torch.uint8)) / 255.0
+        visual_nega_clip = self.my_normalize(tmp_img_n)
+
+        return visual_nega_clip
 
     def __len__(self):
         return len(self.samples)
 
 
     def __getitem__(self, idx):
-        
+
         sample = self.samples[idx]
         name = sample['video_id']
-        audio = np.load(os.path.join(self.audio_dir, name + '.npy'))
-        audio = audio[::6, :]
+        # audio = np.load(os.path.join(self.audio_dir, name + '.npy'))#60*512
+        # audio = audio[::6, :]
+
+        total_audio = self.wavform2fbank(self.audio_dir+'/'+name+ '.wav', num_secs=60)
 
         # visual_out_res18_path = '/home/guangyao_li/dataset/avqa-features/visual_14x14'
-        visual_posi = np.load(os.path.join(self.video_res14x14_dir, name + '.npy'))  
-        
+        # visual_posi = np.load(os.path.join(self.video_res14x14_dir, name + '.npy'))
+
         # visual_posi [60, 512, 14, 14], select 10 frames from one video
-        visual_posi = visual_posi[::6, :]
-        video_idx=self.video_list.index(name)
+        # visual_posi = visual_posi[::6, :]
 
-        for i in range(visual_posi.shape[0]):
-            while(1):
-                neg_frame_id = random.randint(0, self.video_len - 1)
-                if (int(neg_frame_id/60) != video_idx):
-                    break
+        ### ---> video frame process
+        ###
+        zip_file = ParallelZipFile(self.video_res14x14_dir+'/'+name+'.zip', 'r')
+        total_img = self.get_frames(zip_file)
 
-            neg_video_id = int(neg_frame_id / 60)
-            neg_frame_flag = neg_frame_id % 60
-            neg_video_name = self.video_list[neg_video_id]
-            visual_nega_out_res18=np.load(os.path.join(self.video_res14x14_dir, neg_video_name + '.npy'))
-
-            visual_nega_out_res18 = torch.from_numpy(visual_nega_out_res18)
-            visual_nega_clip=visual_nega_out_res18[neg_frame_flag,:,:,:].unsqueeze(0)
-
-            if(i==0):
-                visual_nega=visual_nega_clip
-            else:
-                visual_nega=torch.cat((visual_nega,visual_nega_clip),dim=0)
-
+        video_idx = self.video_list.index(name)
+        visual_nega = [self.get_negative_sample(video_idx) for _ in range(total_img.shape[0])]
+        visual_nega = torch.stack(visual_nega)
         # visual nega [60, 512, 14, 14]
 
         # question
@@ -175,7 +277,7 @@ class AVQA_dataset(Dataset):
         label = ids_to_multinomial(answer, self.ans_vocab)
         label = torch.from_numpy(np.array(label)).long()
 
-        sample = {'audio': audio, 'visual_posi': visual_posi, 'visual_nega': visual_nega, 'question': ques, 'label': label}
+        sample = {'audio': total_audio, 'visual_posi': total_img, 'visual_nega': visual_nega, 'question': ques, 'label': label}
 
         if self.transform:
             sample = self.transform(sample)
@@ -192,8 +294,9 @@ class ToTensor(object):
         label = sample['label']
 
         return { 
-                'audio': torch.from_numpy(audio), 
-                'visual_posi': sample['visual_posi'],
-                'visual_nega': sample['visual_nega'],
-                'question': sample['question'],
-                'label': label}
+            'audio': sample['audio'],
+            'visual_posi': sample['visual_posi'],
+            'visual_nega': sample['visual_nega'],
+            'question': sample['question'],
+            'label': label
+        }
