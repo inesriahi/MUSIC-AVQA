@@ -31,9 +31,21 @@ global_rank = int(os.environ["RANK"])
 
 print("\n--------------- Audio-Visual Spatial-Temporal Model --------------- \n")
 
-def count_parameters(model):
-    '''Calculate the parameters of a model'''
+def count_frozen_parameters(model):
+    return sum(p.numel() for p in model.parameters() if not p.requires_grad)
+
+def count_unfrozen_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def count_total_parameters(model):
+    return sum(p.numel() for p in model.parameters())
+
+def format_params(num):
+    magnitude = 0
+    while abs(num) >= 1000:
+        magnitude += 1
+        num /= 1000.0
+    return f'{num:.2f}{["", "K", "M", "B"][magnitude]}'
 
 def batch_organize(out_match_posi,out_match_nega):
     # audio B 512
@@ -194,7 +206,8 @@ def main():
     torch.manual_seed(config["global"]["seed"])
 
     if config["model"]["name"] == 'AVQA_Fusion_Net':
-        model = AVQA_Fusion_Net(config)
+        model_config = config["model"]
+        model = AVQA_Fusion_Net(model_config)
         model = model.cuda()
         model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
     else:
@@ -225,24 +238,18 @@ def main():
         model_dict.update(pretrained_dict2) #利用预训练模型的参数，更新模型
         model.load_state_dict(model_dict)
         
-        Total_params = count_parameters(model)
-        param_group = []
+        # Count frozen (pretrained) and unfrozen parameters
+        frozen_params = count_frozen_parameters(model)
+        unfrozen_params = count_unfrozen_parameters(model)
+        total_params = count_total_parameters(model)
 
-        for name, param in model.named_parameters():
+        # Calculate percentage of unfrozen parameters
+        percentage_unfrozen = (unfrozen_params / total_params) * 100
 
-            param.requires_grad = True
-
-            if 'ViT' in name and config["model"]["is_frozen"]:
-                param.requires_grad = False
-
-        Trainable_params = count_parameters(model)
-        print('----------- Parameters ------------')
-        print('--- Total params: %0.1f  M  ---'%(Total_params/1e6))
-        print('--- Trainable params: %0.1f M  ---'%(Trainable_params/1e6))
-        print('-----------------------------------')
-
-        print("\n-------------- load pretrained models --------------")
-
+        print(f'Frozen (Pretrained) Parameters: {format_params(frozen_params)}')
+        print(f'Unfrozen (Trainable) Parameters: {format_params(unfrozen_params)}')
+        print(f'Total Parameters: {format_params(total_params)}')
+        print(f'Percentage of Unfrozen to Total Parameters: {percentage_unfrozen:.2f}%\n')
         # ===================================== load pretrained model ===============================================
 
         optimizer = optim.Adam(model.parameters(), lr=config["training"]["learning_rate"])

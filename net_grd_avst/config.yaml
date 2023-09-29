@@ -21,9 +21,21 @@ model:
   name: "AVQA_Fusion_Net"
   checkpoint: "avst"
   mode: "train"
-  vis_encoder: "vit_base_patch16_224_in21k"
-  embedding_size: 768
-  is_frozen: True
+  visual_encoder: 
+    model_name: "vit_base_patch16_224_in21k"
+    embedding_size: 768
+    output_size: 512
+    is_frozen: True
+  audio_encoder:
+    model_name: "vit_base_patch16_224_in21k"
+    embedding_size: 768
+    output_size: 512
+    is_frozen: True
+  common_encoder: # leave this empty if you want to use different encoders for vision and audio
+    # model_name: "vit_base_patch16_224_in21k"
+    # embedding_size: 768
+    # output_size: 512
+    # is_frozen: True
 
 training:
   batch_size: 16
