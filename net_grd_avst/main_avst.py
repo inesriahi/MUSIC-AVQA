@@ -31,6 +31,10 @@ global_rank = int(os.environ["RANK"])
 
 print("\n--------------- Audio-Visual Spatial-Temporal Model --------------- \n")
 
+def count_parameters(model):
+    '''Calculate the parameters of a model'''
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 def batch_organize(out_match_posi,out_match_nega):
     # audio B 512
     # posi B 512
@@ -220,6 +224,22 @@ def main():
         model_dict.update(pretrained_dict1) #利用预训练模型的参数，更新模型
         model_dict.update(pretrained_dict2) #利用预训练模型的参数，更新模型
         model.load_state_dict(model_dict)
+        
+        Total_params = count_parameters(model)
+        param_group = []
+
+        for name, param in model.named_parameters():
+
+            param.requires_grad = True
+
+            if 'ViT' in name and config["model"]["is_frozen"]:
+                param.requires_grad = False
+
+        Trainable_params = count_parameters(model)
+        print('----------- Parameters ------------')
+        print('--- Total params: %0.1f  M  ---'%(Total_params/1e6))
+        print('--- Trainable params: %0.1f M  ---'%(Trainable_params/1e6))
+        print('-----------------------------------')
 
         print("\n-------------- load pretrained models --------------")
 
