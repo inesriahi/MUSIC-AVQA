@@ -88,7 +88,7 @@ def train(config, model, train_loader, optimizer, criterion, epoch):
         writer.add_scalar('run/both',loss.item(), epoch * len(train_loader) + batch_idx)
         loss.backward()
         optimizer.step()
-        if batch_idx % config["training"]["log_interval"] == 0:
+        if batch_idx % config["train"]["log_interval"] == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(audio), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader), loss.item()))
@@ -214,14 +214,34 @@ def main():
         raise ('not recognized')
 
     if config["model"]["mode"] == 'train':
-        train_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_train"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
-                                    transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='train')
+        train_loader_config = config["train"]["loader"]
+        train_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_train"], 
+                                                     audio_dir=config["directories"]["audio_dir"], 
+                                                     video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                                     transform=transforms.Compose([dataloader_avst.ToTensor()]), 
+                                                     mode_flag='train',
+                                                     loader_config=train_loader_config
+                                                     )
         train_sampler = DistributedSampler(train_dataset)
-        train_loader = DataLoader(train_dataset, batch_size=config["training"]["batch_size"], num_workers=config["training"]["num_workers"], pin_memory=True, sampler=train_sampler)
-        val_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_val"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
-                                    transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='val')
-        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=config["training"]["num_workers"], pin_memory=True)
-
+        train_loader = DataLoader(train_dataset, 
+                                  batch_size=train_loader_config["batch_size"], 
+                                  num_workers=train_loader_config["num_workers"], 
+                                  pin_memory=True, 
+                                  sampler=train_sampler)
+        
+        val_loader_config = config["val"]["loader"]
+        val_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_val"], 
+                                                   audio_dir=config["directories"]["audio_dir"], 
+                                                   video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                                   transform=transforms.Compose([dataloader_avst.ToTensor()]), 
+                                                   mode_flag='val',
+                                                   loader_config=val_loader_config
+                                                   )
+        val_loader = DataLoader(val_dataset, 
+                                batch_size=val_loader_config['batch_size'], 
+                                num_workers=val_loader_config["num_workers"], 
+                                shuffle=False, 
+                                pin_memory=True)
 
         # ===================================== load pretrained model ===============================================
         ####### concat model
@@ -251,14 +271,14 @@ def main():
         print(f'Total Parameters: {format_params(total_params)}')
         print(f'Percentage of Unfrozen to Total Parameters: {percentage_unfrozen:.2f}%\n')
         # ===================================== load pretrained model ===============================================
-
-        optimizer = optim.Adam(model.parameters(), lr=config["training"]["learning_rate"])
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=config["training"]["step_lr"]["step_size"], gamma=config["training"]["step_lr"]["gamma"])
+        optimizer_config = config["optimizer"]
+        optimizer = optim.Adam(model.parameters(), lr=optimizer_config["learning_rate"])
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=optimizer_config["step_lr"]["step_size"], gamma=optimizer_config["step_lr"]["gamma"])
         criterion = nn.CrossEntropyLoss()
         best_F = 0
         total_start_time = time.time()  # Record the start time of the training
 
-        for epoch in range(1, config["training"]["epochs"] + 1):
+        for epoch in range(1, config["train"]["epochs"] + 1):
             epoch_start_time = time.time()  # Record the start time of the epoch
             
             # Your training and evaluation code here
@@ -281,10 +301,19 @@ def main():
 
 
     else:
-        test_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_test"], audio_dir=config["directories"]["audio_dir"], video_res14x14_dir=config["directories"]["video_res14x14_dir"],
-                                   transform=transforms.Compose([dataloader_avst.ToTensor()]), mode_flag='test')
+        test_loader_config = config["test"]["loader"]
+        test_dataset = dataloader_avst.AVQA_dataset(label=config["directories"]["label_test"], 
+                                                    audio_dir=config["directories"]["audio_dir"], 
+                                                    video_res14x14_dir=config["directories"]["video_res14x14_dir"],
+                                                    transform=transforms.Compose([dataloader_avst.ToTensor()]), 
+                                                    mode_flag='test',
+                                                    loader_config=test_loader_config)
         print(test_dataset.__len__())
-        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=4, pin_memory=True)
+        test_loader = DataLoader(test_dataset, 
+                                 batch_size=test_loader_config['batch_size'], 
+                                 num_workers=test_loader_config["num_workers"], 
+                                 shuffle=False, 
+                                 pin_memory=True)
         model.load_state_dict(torch.load(config["directories"]["model_save_dir"] + config["model"]["checkpoint"] + ".pt"))
         test(model, test_loader)
 

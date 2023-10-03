@@ -222,11 +222,11 @@ def _resnet(arch, block, layers, pretrained, progress, modal, **kwargs):
         model.load_state_dict(torch.load('/home/guangyao_li/projects/pretrained/resnet18-5c106cde.pth'), strict=False)
     return model
 
-def resnet18(pretrained=False, progress=True, modal='vision',**kwargs):
+def resnet18(is_frozen=False, progress=True, modal='vision',**kwargs):
     r"""ResNet-18 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], pretrained, progress, modal, **kwargs)
+    return _resnet('resnet18', BasicBlock, [2, 2, 2, 2], is_frozen, progress, modal, **kwargs)

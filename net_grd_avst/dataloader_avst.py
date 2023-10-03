@@ -13,7 +13,7 @@ from torchvision import transforms, utils
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from PIL import Image
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-
+from einops import repeat
 from parallelzipfile import ParallelZipFile
 
 warnings.filterwarnings('ignore')
@@ -52,7 +52,8 @@ class AVQA_dataset(Dataset):
                  audio_dir, 
                  video_res14x14_dir, 
                  transform=None, 
-                 mode_flag='train'):
+                 mode_flag='train', 
+                 loader_config=None):
         """
         Initialize the dataset.
 
@@ -63,7 +64,7 @@ class AVQA_dataset(Dataset):
             transform (callable, optional): Optional transformation to apply on self.samples.
             mode_flag (str, optional): Mode ('train' or 'test'). Default is 'train'.
         """
-        
+        self.config = loader_config
         samples = json.load(open('/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-train.json', 'r'))
         ques_vocab = ['<pad>']
         ans_vocab = []
@@ -105,8 +106,11 @@ class AVQA_dataset(Dataset):
         self.video_list = video_list
         self.video_len = 60 * len(video_list)
         
+        image_width = self.config["visual_shape"].get('width', 224)
+        image_height = self.config["visual_shape"].get('height', 224)
+        
         self.my_normalize = Compose([
-            Resize([224,224], interpolation=Image.BICUBIC),
+            Resize([image_width,image_height], interpolation=Image.BICUBIC),
             Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD),
         ])
         
@@ -128,10 +132,12 @@ class AVQA_dataset(Dataset):
         """
         waveform, sr = torchaudio.load(filename)
         waveform = waveform - waveform.mean()
+        num_mel_bins = self.config["audio_shape"].get('num_mel_bins', 224)
+        num_frames = self.config["audio_shape"].get('num_frames', 224)
         
-        fbank = torchaudio.compliance.kaldi.fbank(waveform, htk_compat=True, sample_frequency=sr, use_energy=False, window_type='hanning', num_mel_bins=224, dither=0.0, frame_shift=4.45)
+        fbank = torchaudio.compliance.kaldi.fbank(waveform, htk_compat=True, sample_frequency=sr, use_energy=False, window_type='hanning', num_mel_bins=num_mel_bins, dither=0.0, frame_shift=1000.0/num_frames)
         
-        target_length = 224 # to match ViT
+        target_length = num_frames # to match ViT
         
         ## align
         if len(fbank) > num_secs*target_length:
@@ -155,8 +161,10 @@ class AVQA_dataset(Dataset):
                 audio_sample = audio_sample[:target_length, :]
 
             total_audio.append(audio_sample)
-
-        return torch.stack(total_audio) # (T, len, dim) T = 10, len = total_length = 224, dim = num_mel_bins = 224
+        audio_stacked = torch.stack(total_audio) # (T, len, dim) T = 10, len = total_length = num_frames (224 if not specified), dim = num_mel_bins (224 if not specified)
+        num_channels = self.config["audio_shape"].get('channels', 3)
+        audio_stacked = repeat(audio_stacked, 't len dim -> t c len dim', c=num_channels)
+        return audio_stacked
 
     # visual
     def get_frames(self, zip_file):

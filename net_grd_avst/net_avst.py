@@ -51,8 +51,10 @@ class QstEncoder(nn.Module):
         return qst_feature
 
 class ViTBackbone(nn.Module):
-    def __init__(self, model_name, embedding_size, output_size, is_frozen=False):
+    def __init__(self, model_name, is_frozen=False):
         super().__init__()
+        embedding_size = 768 # depends on the architecture, so no need to be given as an argument
+        output_size = 512 # I want it to be fixed to be able to plugin other archs easily
         self.ViT = timm.create_model(model_name, pretrained=True)
         self.my_fc_v = nn.Linear(embedding_size, output_size)
 
@@ -63,8 +65,10 @@ class ViTBackbone(nn.Module):
         bs, t, c, h, w = x.shape
         x = rearrange(x, 'b t c h w -> (b t) c h w')
         features = self.ViT.forward_features(x)
-        features = features[:, :-1].clone()
-        return self.my_fc_v(features)
+        features = features[:, 1:].clone()
+        features = self.my_fc_v(features)
+        features = rearrange(features, '(b t) (h w) c -> b t c h w', b=bs, t=t, h=14, w=14) # [bs, t, 512, 14, 14]
+        return features
 
     @torch.no_grad()
     def forward_no_grad(self, x):
@@ -73,14 +77,46 @@ class ViTBackbone(nn.Module):
     def freeze_parameters(self):
         for param in self.ViT.parameters():
             param.requires_grad = False
+
+class ResNetBackbone(nn.Module):
+    def __init__(self, model_name, is_frozen=False):
+        ## Note: This code currently supports only resnet18, so model_name should be 'resnet18'
+        super().__init__()
+        self.resnet = timm.create_model(model_name, pretrained=True)
+        output_size = 512
+        embedding_size = 256 # for resnet after removing the last block
+        self.ln = nn.Linear(embedding_size, output_size)
+        
+        if is_frozen:
+            self.freeze_parameters()
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-3]) 
+
+    def forward(self, x):
+        # x shape: bs, t, 3, 224, 224
+        bs, t, c, h, w = x.shape
+        x = rearrange(x, 'b t c h w -> (b t) c h w')
+        features = self.resnet(x) # [b*t, 256, 14, 14]
+        features = rearrange(features, 'bt c h w -> bt h w c') # [b*t, 14, 14, 256]
+        features = self.ln(features) # [b*t, 14, 14, 512]
+        features = rearrange(features, '(b t) h w c -> b t c h w', b=bs, t=t, h=14, w=14) # [bs, t, 512, 14, 14]
+        return features 
+    
+    @torch.no_grad()
+    def forward_no_grad(self, x):
+        return self.forward(x)
+    
+    def freeze_parameters(self):
+        for param in self.resnet.parameters():
+            param.requires_grad = False
+        
     
 def create_backbone(config):
     model_name = config.get('model_name', '').lower()
 
     if 'vit' in model_name:
         return ViTBackbone(**config)
-    # elif 'resnet' in model_name:
-    #     return ResNetBackbone(**config)
+    elif 'resnet18' in model_name:
+        return ResNetBackbone(**config)
     else:
         raise ValueError(f"Unsupported model architecture: {model_name}")
 
@@ -147,13 +183,12 @@ class AVQA_Fusion_Net(nn.Module):
         self.relu3 = nn.ReLU()
         self.fc4 = nn.Linear(128, 2)
         self.relu4 = nn.ReLU()
-        self.my_fc_a = nn.Linear(config["audio_encoder"]["embedding_size"], 512)
 
 
     def forward(self, audio, visual_posi, visual_nega, question):
         '''
             input question shape:    [B, T] => [B, 14]
-            input audio shape:       [B, T, len, C] => [B, 10, 224, 224]
+            input audio shape:       [B, T, c, len, dim] => [B, 10, 3 (1), 224, 224]
             input visual_posi shape: [B, T, C, H, W] => [B, 10, 3, 224, 224]
             input visual_nega shape: [B, T, C, H, W] => [B, 10, 3, 224, 224]
         '''
@@ -164,12 +199,13 @@ class AVQA_Fusion_Net(nn.Module):
         xq = qst_feature.unsqueeze(0)
         
         ## audio features 
-        audio = repeat(audio, 'b t len dim -> b t c len dim', c=3)
+        # audio = repeat(audio, 'b t len dim -> b t c len dim', c=3)
         # audio = rearrange(audio, 'b t c h w -> (b t) c h w')
         # a = self.ViT.forward_features(audio)
         # a = a[:,:-1].clone() #[20, 196, 768]
         
-        f_a = self.audio_backbone(audio) #[20, 196, 768] [B*T, 14*14, 768]
+        f_a = self.audio_backbone(audio) #[B, T, c (512), 14, 14] =====legacy: [20, 196, 512] [B*T, 14*14, 512]
+        f_a = rearrange(f_a, 'b t c h w -> (b t) (h w) c')
         f_a = f_a.mean(dim=1) # [B, C] => [20, 512]
         audio = rearrange(f_a, '(b t) c -> b t c', b=bs ,t=t) #[2, 10, 512]
         audio_feat = F.relu(audio) # [2, 10, 512]
@@ -178,10 +214,9 @@ class AVQA_Fusion_Net(nn.Module):
         B, T, C = audio_feat.size()             # [B, T, C]
         audio_feat = audio_feat.view(B*T, C)    # [B*T, C]
         
-        
         ## visual positive features
         visual_posi = self.visual_backbone(visual_posi) # [B*T, 14*14=196, 512] 
-        visual_posi = rearrange(visual_posi, '(b t) (h w) c -> b t c h w', b=bs, t=t, h=14, w=14)
+        # visual_posi = rearrange(visual_posi, '(b t) (h w) c -> b t c h w', b=bs, t=t, h=14, w=14)
         B, T, C, H, W = visual_posi.size()
         temp_visual = visual_posi.view(B*T, C, H, W)            # [B*T, C, H, W]
         v_feat = self.avgpool(temp_visual)                      # [B*T, C, 1, 1]
@@ -195,7 +230,7 @@ class AVQA_Fusion_Net(nn.Module):
         
         ## visual negative features
         visual_nega = self.visual_backbone.forward_no_grad(visual_nega)
-        visual_nega = rearrange(visual_nega, '(b t) (h w) c -> b t c h w', b=bs, t=t, h=14, w=14)
+        # visual_nega = rearrange(visual_nega, '(b t) (h w) c -> b t c h w', b=bs, t=t, h=14, w=14)
         B, T, C, H, W = visual_nega.size()
         temp_visual = visual_nega.view(B*T, C, H, W)
         v_feat = self.avgpool(temp_visual)

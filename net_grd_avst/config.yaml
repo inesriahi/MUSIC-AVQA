@@ -6,7 +6,6 @@ system:
 
 global:
   seed: 1
-  gpu: "0, 1, 2, 3, 4, 5, 6, 7"
 
 directories:
   audio_dir: "/scratch/project_462000189/datasets/MUCIS-AVQA/AVQA_Dataset/raw_audio"
@@ -22,27 +21,61 @@ model:
   checkpoint: "avst"
   mode: "train"
   visual_encoder: 
-    model_name: "vit_base_patch16_224_in21k"
-    embedding_size: 768
-    output_size: 512
-    is_frozen: True
-  audio_encoder:
-    model_name: "vit_base_patch16_224_in21k"
-    embedding_size: 768
-    output_size: 512
-    is_frozen: True
-  common_encoder: # leave this empty if you want to use different encoders for vision and audio
     # model_name: "vit_base_patch16_224_in21k"
-    # embedding_size: 768
-    # output_size: 512
     # is_frozen: True
 
-training:
-  batch_size: 16
-  num_workers: 4
-  epochs: 50
+    # model_name: "resnet18"
+    # is_frozen: True
+  audio_encoder:
+    # model_name: "vit_base_patch16_224_in21k"
+    # is_frozen: True
+  common_encoder: # leave this empty if you want to use different encoders for vision and audio
+    model_name: "vit_base_patch16_224_in21k"
+    is_frozen: True
+
+optimizer:
   learning_rate: 0.0001
-  log_interval: 50
   step_lr:
     step_size: 8
     gamma: 0.1
+
+train:
+  epochs: 50
+  log_interval: 50
+  loader:
+    audio_shape: 
+      channels: 3
+      num_mel_bins: 224
+      num_frames: 224
+    visual_shape:
+      channels: 3
+      width: 224
+      height: 224
+    batch_size: 16
+    num_workers: 4
+
+val:
+  loader:
+    audio_shape: 
+      channels: 3
+      num_mel_bins: 224
+      num_frames: 224
+    visual_shape:
+      channels: 3
+      width: 224
+      height: 224
+    batch_size: 1
+    num_workers: 4
+      
+test:
+  loader:
+    audio_shape: 
+      channels: 3
+      num_mel_bins: 224
+      num_frames: 224
+    visual_shape:
+      channels: 3
+      width: 224
+      height: 224
+    batch_size: 1
+    num_workers: 4
