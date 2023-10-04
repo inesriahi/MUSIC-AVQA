@@ -18,7 +18,7 @@ def get_audio_len(audio_file):
     with contextlib.closing(wave.open(audio_file, 'r')) as f:
         frames = f.getnframes()
         rate = f.getframerate()
-        wav_length = int(frames / float(rate))
+        wav_length = int(frames / float(rate)) # The length of the audio in seconds and rounded down
         # print("wave_len: ", wav_length)
 
         return wav_length
@@ -29,8 +29,8 @@ def get_audio_len(audio_file):
 checkpoint_path = 'vggish_model.ckpt'
 pca_params_path = 'vggish_pca_params.npz'
 # num_secs = 60 # length of the audio sequence. Videos in our dataset are all 10s long.
-freq = 1000
-sr = 44100
+# freq = 1000
+# sr = 44100
 
 
 audio_dir = "./data/audio/" # .wav audio files

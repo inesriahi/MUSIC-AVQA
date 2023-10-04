@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=MUSIC_AVQA_one_model
 #SBATCH --account=project_462000189
-#SBATCH --partition=dev-g
+#SBATCH --partition=small-g
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=56
 #SBATCH --gpus-per-node=8
 #SBATCH --mem=480G
-#SBATCH --time=1:00:00
+#SBATCH --time=48:00:00
 
 #SBATCH --output=outputs/output_%A_%a.txt
 #SBATCH --error=errors/errors_%A_%a.txt
@@ -14,7 +14,6 @@
 module use /appl/local/csc/modulefiles/
 module load pytorch
 export PYTHONUSERBASE=/scratch/project_462000189/ines/python_base
-
 encoder_type=ViT
 encoder=vit_base_patch16_224_in21k
 

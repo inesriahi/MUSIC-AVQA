@@ -9,6 +9,8 @@ import numpy as np
 
 import timm
 from einops import rearrange, repeat
+from torchvgg.vggish import VGGish
+
 def batch_organize(out_match_posi, out_match_nega):
     # audio B 512
     # posi B 512
@@ -51,10 +53,9 @@ class QstEncoder(nn.Module):
         return qst_feature
 
 class ViTBackbone(nn.Module):
-    def __init__(self, model_name, is_frozen=False):
+    def __init__(self, model_name, output_size, is_frozen=False):
         super().__init__()
         embedding_size = 768 # depends on the architecture, so no need to be given as an argument
-        output_size = 512 # I want it to be fixed to be able to plugin other archs easily
         self.ViT = timm.create_model(model_name, pretrained=True)
         self.my_fc_v = nn.Linear(embedding_size, output_size)
 
@@ -79,7 +80,7 @@ class ViTBackbone(nn.Module):
             param.requires_grad = False
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, model_name, is_frozen=False):
+    def __init__(self, model_name, output_size, is_frozen=False):
         ## Note: This code currently supports only resnet18, so model_name should be 'resnet18'
         super().__init__()
         self.resnet = timm.create_model(model_name, pretrained=True)
@@ -110,6 +111,37 @@ class ResNetBackbone(nn.Module):
             param.requires_grad = False
         
     
+class VGGishBackbone(nn.Module):
+    def __init__(self, model_name, output_size, is_frozen=False):
+
+        super().__init__()
+        model_urls = {'vggish': 'https://github.com/harritaylor/torchvggish/releases/download/v0.1/vggish-10086976.pth'}
+        self.vgg = VGGish(model_urls, 
+                          pretrained=True, 
+                          preprocess=False, 
+                          postprocess=False, 
+                          progress=False
+                          )
+        embedding_size = 128
+        self.ln = nn.Linear(embedding_size, output_size)
+        
+        if is_frozen:
+            self.freeze_parameters()
+        
+    def forward(self, x):
+        # x shape: bs, t, 1, 96, 64 (should be set properly in config)
+        bs, t, c, h, w = x.shape
+        x = rearrange(x, 'b t c len dim -> (b t) c len dim')
+        x = self.vgg(x) # [btc, 128]
+        x = self.ln(x) # [btc, 512]
+        x = rearrange(x, '(b t) dim -> b t dim', b=bs, t=t)
+        return x
+    
+    def freeze_parameters(self):
+        for param in self.vgg.parameters():
+            param.requires_grad = False
+
+    
 def create_backbone(config):
     model_name = config.get('model_name', '').lower()
 
@@ -117,6 +149,8 @@ def create_backbone(config):
         return ViTBackbone(**config)
     elif 'resnet18' in model_name:
         return ResNetBackbone(**config)
+    elif 'vggish' in model_name:
+        return VGGishBackbone(**config)
     else:
         raise ValueError(f"Unsupported model architecture: {model_name}")
 
@@ -205,9 +239,15 @@ class AVQA_Fusion_Net(nn.Module):
         # a = a[:,:-1].clone() #[20, 196, 768]
         
         f_a = self.audio_backbone(audio) #[B, T, c (512), 14, 14] =====legacy: [20, 196, 512] [B*T, 14*14, 512]
-        f_a = rearrange(f_a, 'b t c h w -> (b t) (h w) c')
-        f_a = f_a.mean(dim=1) # [B, C] => [20, 512]
-        audio = rearrange(f_a, '(b t) c -> b t c', b=bs ,t=t) #[2, 10, 512]
+        
+        if len(f_a.shape) == 5: # output from a visual model
+            f_a = rearrange(f_a, 'b t c h w -> (b t) (h w) c')
+            f_a = f_a.mean(dim=1) # [B, C] => [20, 512]
+            audio = rearrange(f_a, '(b t) c -> b t c', b=bs ,t=t) #[2, 10, 512]
+            
+        else:
+            audio = f_a
+            
         audio_feat = F.relu(audio) # [2, 10, 512]
         audio_feat = self.fc_a2(audio_feat)
         audio_feat_pure = audio_feat

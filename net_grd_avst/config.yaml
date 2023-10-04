@@ -24,14 +24,22 @@ model:
     # model_name: "vit_base_patch16_224_in21k"
     # is_frozen: True
 
-    # model_name: "resnet18"
-    # is_frozen: True
+    model_name: "resnet18"
+    is_frozen: True
+    output_size: 512
   audio_encoder:
     # model_name: "vit_base_patch16_224_in21k"
     # is_frozen: True
-  common_encoder: # leave this empty if you want to use different encoders for vision and audio
-    model_name: "vit_base_patch16_224_in21k"
+    # output_size: 512
+
+
+    model_name: "vggish"
     is_frozen: True
+    output_size: 512
+  common_encoder: # leave this empty if you want to use different encoders for vision and audio
+    # model_name: "vit_base_patch16_224_in21k"
+    # is_frozen: True
+    # output_size: 512
 
 optimizer:
   learning_rate: 0.0001
@@ -44,9 +52,9 @@ train:
   log_interval: 50
   loader:
     audio_shape: 
-      channels: 3
-      num_mel_bins: 224
-      num_frames: 224
+      channels: 1
+      num_mel_bins: 64
+      num_frames: 96
     visual_shape:
       channels: 3
       width: 224
@@ -57,9 +65,9 @@ train:
 val:
   loader:
     audio_shape: 
-      channels: 3
-      num_mel_bins: 224
-      num_frames: 224
+      channels: 1
+      num_mel_bins: 64
+      num_frames: 96
     visual_shape:
       channels: 3
       width: 224
@@ -70,9 +78,9 @@ val:
 test:
   loader:
     audio_shape: 
-      channels: 3
-      num_mel_bins: 224
-      num_frames: 224
+      channels: 1
+      num_mel_bins: 64
+      num_frames: 96
     visual_shape:
       channels: 3
       width: 224

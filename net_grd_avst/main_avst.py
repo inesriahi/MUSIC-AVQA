@@ -120,7 +120,7 @@ def test(model, val_loader):
     model.eval()
     total = 0
     correct = 0
-    samples = json.load(open('./data/json/avqa-test.json', 'r'))
+    samples = json.load(open("/scratch/project_462000189/datasets/MUCIS-AVQA/json/avqa-test.json", 'r'))
     A_count = []
     A_cmp = []
     V_count = []
